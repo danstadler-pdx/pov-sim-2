@@ -28,6 +28,15 @@ BASIC_GET_ENDPOINTS=(
 GET_AIRLINES_ENDPOINT="/airlines"
 GET_AIRLINES_RAISE_QUERY_PARAM="?raise=true"
 
+# Stage 3.2 — exercise the airlines -> flights call chain so Application
+# Observability shows a parent-child trace and a service-map edge.
+GET_AIRLINE_FLIGHTS_ENDPOINTS=(
+    "/airlines/AA/flights"
+    "/airlines/DL/flights"
+    "/airlines/UA/flights"
+)
+GET_AIRLINE_FLIGHTS_RAISE_QUERY_PARAM="?raise=true"
+
 usage() {
     echo "Usage: $0 [-e error_rate] [-d duration_secs] [-b base_url]"
     echo "  -e  Rate of requests that should error, expressed as a decimal in the range [0.0, 1.0] (default = ${DEFAULT_ERROR_RATE})"
@@ -91,6 +100,19 @@ run_loadgen() {
         echo "\nSending GET request: $ENDPOINT"
         curl $ENDPOINT
         echo "\n"
+
+        # Stage 3.2 — exercise the cross-service call chain
+        for i in "${GET_AIRLINE_FLIGHTS_ENDPOINTS[@]}"; do
+            QUERY_PARAMS=""
+            RAND_DEC=($echo "0.$((RANDOM % 100))")
+            if (( $(echo "$RAND_DEC < $ERROR_RATE" | bc -l) )); then
+                QUERY_PARAMS=$GET_AIRLINE_FLIGHTS_RAISE_QUERY_PARAM
+            fi
+            ENDPOINT="$BASE_URL$i$QUERY_PARAMS"
+            echo "\nSending GET request: $ENDPOINT"
+            curl $ENDPOINT
+            echo "\n"
+        done
 
         sleep 1
     done

@@ -1,0 +1,228 @@
+// Stage 2.1 — OTLP receiver → resource enrichment → batch → Grafana Cloud
+// Based on the Cloud OTel onboarding wizard output, modified to read
+// credentials from env vars so the token is not committed to git.
+//
+// Pipeline:
+//   otlp receiver
+//     → resourcedetection (env, system)
+//     → drop_unneeded_resource_attributes
+//     → [metrics] add_resource_attributes_as_metric_attributes → batch → exporter
+//     → [logs]   batch → exporter
+//     → [traces] batch → exporter
+//                + host_info connector → metrics → batch → exporter
+
+otelcol.receiver.otlp "default" {
+	// Defaults: gRPC :4317, HTTP :4318. Reachable from other Compose services
+	// at http://alloy:4317 / http://alloy:4318.
+	grpc { }
+	http { }
+
+	output {
+		metrics = [otelcol.processor.filter.drop_health.input]
+		logs    = [otelcol.processor.filter.drop_health.input]
+		traces  = [otelcol.processor.filter.drop_health.input]
+	}
+}
+
+// Drops spans for /health endpoint requests — Grafana best-practice (excludes
+// noisy probe traffic from traces to keep payloads focused on real user paths).
+// Language-agnostic at the collector layer rather than per-SDK env var; covers
+// both Python and Java services from one place.
+otelcol.processor.filter "drop_health" {
+	error_mode = "ignore"
+
+	traces {
+		span = [
+			"attributes[\"url.path\"] == \"/health\"",
+			"attributes[\"http.target\"] == \"/health\"",
+			"attributes[\"http.route\"] == \"/health\"",
+		]
+	}
+
+	output {
+		metrics = [otelcol.processor.resourcedetection.default.input]
+		logs    = [otelcol.processor.resourcedetection.default.input]
+		traces  = [otelcol.processor.resourcedetection.default.input]
+	}
+}
+
+otelcol.processor.resourcedetection "default" {
+	detectors = ["env", "system"]
+
+	system {
+		hostname_sources = ["os"]
+	}
+
+	output {
+		metrics = [otelcol.processor.transform.drop_unneeded_resource_attributes.input]
+		logs    = [otelcol.processor.transform.drop_unneeded_resource_attributes.input]
+		traces  = [otelcol.processor.transform.drop_unneeded_resource_attributes.input]
+	}
+}
+
+// Drops noisy resource attributes (process info, OS detail, k8s start times)
+// that bloat label cardinality without adding investigative value.
+otelcol.processor.transform "drop_unneeded_resource_attributes" {
+	error_mode = "ignore"
+
+	trace_statements {
+		context    = "resource"
+		statements = [
+			"delete_key(resource.attributes, \"k8s.pod.start_time\")",
+			"delete_key(resource.attributes, \"os.description\")",
+			"delete_key(resource.attributes, \"os.type\")",
+			"delete_key(resource.attributes, \"process.command_args\")",
+			"delete_key(resource.attributes, \"process.executable.path\")",
+			"delete_key(resource.attributes, \"process.pid\")",
+			"delete_key(resource.attributes, \"process.runtime.description\")",
+			"delete_key(resource.attributes, \"process.runtime.name\")",
+			"delete_key(resource.attributes, \"process.runtime.version\")",
+		]
+	}
+
+	metric_statements {
+		context    = "resource"
+		statements = [
+			"delete_key(resource.attributes, \"k8s.pod.start_time\")",
+			"delete_key(resource.attributes, \"os.description\")",
+			"delete_key(resource.attributes, \"os.type\")",
+			"delete_key(resource.attributes, \"process.command_args\")",
+			"delete_key(resource.attributes, \"process.executable.path\")",
+			"delete_key(resource.attributes, \"process.pid\")",
+			"delete_key(resource.attributes, \"process.runtime.description\")",
+			"delete_key(resource.attributes, \"process.runtime.name\")",
+			"delete_key(resource.attributes, \"process.runtime.version\")",
+		]
+	}
+
+	log_statements {
+		context    = "resource"
+		statements = [
+			"delete_key(resource.attributes, \"k8s.pod.start_time\")",
+			"delete_key(resource.attributes, \"os.description\")",
+			"delete_key(resource.attributes, \"os.type\")",
+			"delete_key(resource.attributes, \"process.command_args\")",
+			"delete_key(resource.attributes, \"process.executable.path\")",
+			"delete_key(resource.attributes, \"process.pid\")",
+			"delete_key(resource.attributes, \"process.runtime.description\")",
+			"delete_key(resource.attributes, \"process.runtime.name\")",
+			"delete_key(resource.attributes, \"process.runtime.version\")",
+		]
+	}
+
+	output {
+		metrics = [otelcol.processor.transform.add_resource_attributes_as_metric_attributes.input]
+		logs    = [otelcol.processor.batch.default.input]
+		traces  = [
+			otelcol.processor.batch.default.input,
+			otelcol.connector.host_info.default.input,
+		]
+	}
+}
+
+// Generates host_info metrics from trace data — populates the Host view
+// in Grafana Cloud Application Observability (matters for Stage 3.2).
+otelcol.connector.host_info "default" {
+	host_identifiers = ["host.name"]
+
+	output {
+		metrics = [otelcol.processor.batch.default.input]
+	}
+}
+
+// Promotes deployment.environment + service.version from resource scope
+// to datapoint scope so they are queryable per-series in PromQL.
+otelcol.processor.transform "add_resource_attributes_as_metric_attributes" {
+	error_mode = "ignore"
+
+	metric_statements {
+		context    = "datapoint"
+		statements = [
+			"set(datapoint.attributes[\"deployment.environment\"], resource.attributes[\"deployment.environment\"])",
+			"set(datapoint.attributes[\"service.version\"], resource.attributes[\"service.version\"])",
+		]
+	}
+
+	output {
+		metrics = [otelcol.processor.batch.default.input]
+	}
+}
+
+otelcol.processor.batch "default" {
+	output {
+		metrics = [otelcol.exporter.otlphttp.grafana_cloud.input]
+		logs    = [otelcol.exporter.otlphttp.grafana_cloud.input]
+		traces  = [otelcol.exporter.otlphttp.grafana_cloud.input]
+	}
+}
+
+otelcol.exporter.otlphttp "grafana_cloud" {
+	client {
+		endpoint = sys.env("CLOUD_OTLP_ENDPOINT")
+		auth     = otelcol.auth.basic.grafana_cloud.handler
+	}
+}
+
+otelcol.auth.basic "grafana_cloud" {
+	username = sys.env("CLOUD_OTLP_USERNAME")
+	password = sys.env("CLOUD_OTLP_PASSWORD")
+}
+
+// ---------------------------------------------------------------------------
+// Container-log scraping path (Stage 2.1 logs deliverable)
+//
+// OTel Python logs export is flagged experimental and dropped records
+// silently in our setup. The production-standard path is to scrape Docker
+// container stdout/stderr via Alloy and ship to Cloud Loki directly. This
+// also covers any containerised service regardless of SDK or language.
+
+discovery.docker "containers" {
+	host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "docker_to_loki" {
+	targets = []
+
+	// Promote container name → service_name so Loki queries can use the
+	// same convention as the OTLP metrics path ({service_name="flights"}).
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(pov-sim-2-)?(.*?)(-\\d+)?$"
+		target_label  = "service_name"
+		replacement   = "$2"
+	}
+
+	// Drop alloy's own logs to avoid feedback noise.
+	rule {
+		source_labels = ["service_name"]
+		regex         = "alloy"
+		action        = "drop"
+	}
+}
+
+loki.source.docker "default" {
+	host          = "unix:///var/run/docker.sock"
+	targets       = discovery.docker.containers.targets
+	relabel_rules = discovery.relabel.docker_to_loki.rules
+	forward_to    = [loki.process.cleanup.receiver]
+}
+
+// Strip ANSI color escape sequences before writing to Loki — Grafana
+// best-practice (Werkzeug, npm, and other dev-mode tools emit color codes
+// that bloat storage bytes and break regex matching). Single-stage processor
+// applied to every log stream the Docker source produces.
+loki.process "cleanup" {
+	forward_to = [loki.write.grafana_cloud.receiver]
+
+	stage.decolorize { }
+}
+
+loki.write "grafana_cloud" {
+	endpoint {
+		url = sys.env("CLOUD_LOKI_URL")
+		basic_auth {
+			username = sys.env("CLOUD_LOKI_USERNAME")
+			password = sys.env("CLOUD_LOKI_PASSWORD")
+		}
+	}
+}

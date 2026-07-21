@@ -1,3 +1,6 @@
+setup:
+	@chmod +x scripts/setup.sh && scripts/setup.sh
+
 up:
 	docker compose up --build
 
@@ -12,4 +15,4 @@ ui:
 	docker compose --profile ui up --build
 
 
-.PHONY: up down
+.PHONY: setup up down

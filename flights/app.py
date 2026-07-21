@@ -1,11 +1,33 @@
+import logging
+import os
+
+import pyroscope
 from flasgger import Swagger
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from utils import get_random_int
+from utils import generate_flight, get_random_int
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+logging.getLogger("werkzeug").setLevel(logging.INFO)
+
+# Stage 2.2 — Pyroscope continuous profiling.
+# Pushes profiles direct to Grafana Cloud Pyroscope (bypasses Alloy by design).
+pyroscope.configure(
+    application_name=os.environ.get("PYROSCOPE_APPLICATION_NAME", "flights"),
+    server_address=os.environ["PYROSCOPE_SERVER_ADDRESS"],
+    basic_auth_username=os.environ["PYROSCOPE_BASIC_AUTH_USER"],
+    basic_auth_password=os.environ["PYROSCOPE_BASIC_AUTH_PASSWORD"],
+    tags={
+        "service.namespace": "pov-sim",
+        "deployment.environment": "lab",
+    },
+)
 
 app = Flask(__name__)
 Swagger(app)
 CORS(app)
+app.logger.setLevel(logging.INFO)
+app.logger.info("flights service starting up")
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -49,8 +71,9 @@ def get_flights(airline):
     status_code = request.args.get("raise")
     if status_code:
       raise Exception(f"Encountered {status_code} error") # pylint: disable=broad-exception-raised
-    random_int = get_random_int(100, 999)
-    return jsonify({airline: [random_int]}), 200
+    count = get_random_int(1, 5)
+    flights = [generate_flight(airline) for _ in range(count)]
+    return jsonify({"airline_code": airline, "count": count, "flights": flights}), 200
 
 @app.route("/flight", methods=["POST"])
 def book_flight():

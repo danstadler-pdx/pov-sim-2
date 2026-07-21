@@ -1,18 +1,72 @@
 services:
+  alloy:
+    image: grafana/alloy:latest
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # for loki.source.docker
+    environment:
+      CLOUD_OTLP_ENDPOINT: ${CLOUD_OTLP_ENDPOINT}
+      CLOUD_OTLP_USERNAME: ${CLOUD_OTLP_USERNAME}
+      CLOUD_OTLP_PASSWORD: ${CLOUD_OTLP_PASSWORD}
+      CLOUD_LOKI_URL: ${CLOUD_LOKI_URL}
+      CLOUD_LOKI_USERNAME: ${CLOUD_LOKI_USERNAME}
+      # Reuse OTLP write token (same token has logs:write scope)
+      CLOUD_LOKI_PASSWORD: ${CLOUD_OTLP_PASSWORD}
+    ports:
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+      - "12346:12345"  # Alloy UI (http://localhost:12346) — 12345 is taken by the host Brew Alloy serving macos-node metrics
+    profiles: [backends]
   airlines:
-    build: 
+    build:
       context: ./airlines
     ports:
       - "8080:8080"
+    environment:
+      OTEL_SERVICE_NAME: airlines
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://alloy:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=pov-sim,deployment.environment=lab,service.version=0.1.0
+      OTEL_LOGS_EXPORTER: otlp
+      # Pyroscope Java agent — direct to Cloud Pyroscope (Stage 2.2)
+      PYROSCOPE_APPLICATION_NAME: ${PYROSCOPE_APPLICATION_NAME_FOR_AIRLINES}
+      PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS}
+      PYROSCOPE_BASIC_AUTH_USER: ${PYROSCOPE_BASIC_AUTH_USER}
+      PYROSCOPE_BASIC_AUTH_PASSWORD: ${CLOUD_OTLP_PASSWORD}
+      # Downstream service URL for /airlines/{code}/flights (Stage 3.2 chain)
+      FLIGHTS_SERVICE_URL: http://flights:5001
+    depends_on:
+      - alloy
+      - flights
     profiles: [backends]
   flights:
-    build: 
+    build:
       context: ./flights
     ports:
       - "5001:5001"
+    environment:
+      OTEL_SERVICE_NAME: flights
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://alloy:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=pov-sim,deployment.environment=lab,service.version=0.1.0
+      OTEL_LOGS_EXPORTER: otlp
+      OTEL_PYTHON_LOG_LEVEL: info
+      OTEL_PYTHON_LOG_CORRELATION: "true"
+      # Pyroscope Python SDK — direct to Cloud Pyroscope (Stage 2.2)
+      PYROSCOPE_APPLICATION_NAME: ${PYROSCOPE_APPLICATION_NAME_FOR_FLIGHTS}
+      PYROSCOPE_SERVER_ADDRESS: ${PYROSCOPE_SERVER_ADDRESS}
+      PYROSCOPE_BASIC_AUTH_USER: ${PYROSCOPE_BASIC_AUTH_USER}
+      PYROSCOPE_BASIC_AUTH_PASSWORD: ${CLOUD_OTLP_PASSWORD}
+    depends_on:
+      - alloy
     profiles: [backends]
   frontend:
-    build: 
+    build:
       context: ./frontend
     ports:
       - "3000:3000"
@@ -20,6 +74,6 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
-    environment: 
+    environment:
       REACT_APP_AIRLINES_API_URL: ${REACT_APP_AIRLINES_API_URL}
       REACT_APP_FLIGHTS_API_URL: ${REACT_APP_FLIGHTS_API_URL}

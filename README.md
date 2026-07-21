@@ -37,6 +37,15 @@ The `frontend` service is a simple React app that make API requests to both the 
 git clone https://github.com/aninamu/pov-sim.git
 ```
 
+> **Apple Silicon (M-series) Macs:** You'll need the `docker-buildx` plugin installed. Run the following once after installing Docker:
+> ```
+> brew install docker-buildx
+> mkdir -p ~/.docker/cli-plugins
+> ln -sfn /opt/homebrew/opt/docker-buildx/bin/docker-buildx ~/.docker/cli-plugins/docker-buildx
+> docker buildx create --use
+> ```
+> Also ensure you copy `.env_EXAMPLE` to `.env` before running `make up` — it includes the required `DOCKER_DEFAULT_PLATFORM=linux/amd64` and `COMPOSE_PROFILES` settings.
+
 ## Spin up all services
 
 From the project root, run all the services with the following command:
